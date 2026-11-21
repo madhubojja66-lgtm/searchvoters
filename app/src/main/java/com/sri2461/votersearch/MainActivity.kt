@@ -31,15 +31,63 @@ class MainActivity : AppCompatActivity() {
  override fun onCreate(savedInstanceState: Bundle?) { super.onCreate(savedInstanceState); db=VoterDb(this); makeUi(); showState() }
 
  private fun makeUi() {
-  val root=LinearLayout(this).apply { orientation=LinearLayout.VERTICAL; setPadding(18,20,18,10) }
-  root.addView(TextView(this).apply { text="Voter Search"; textSize=25f; gravity=Gravity.CENTER })
-  root.addView(Button(this).apply { text="Import / Replace voter PDF"; setOnClickListener { picker.launch(arrayOf("application/pdf")) } })
-  input=EditText(this).apply { hint="Search English / Telugu name, voter ID or serial"; singleLine=true }; root.addView(input)
-  root.addView(Button(this).apply { text="Search"; setOnClickListener { search() } })
-  status=TextView(this); root.addView(status)
-  progress=ProgressBar(this,null,android.R.attr.progressBarStyleHorizontal).apply { max=100; visibility=View.GONE }; root.addView(progress)
-  val scroll=ScrollView(this); results=LinearLayout(this).apply { orientation=LinearLayout.VERTICAL }; scroll.addView(results)
-  root.addView(scroll,LinearLayout.LayoutParams(-1,0,1f)); setContentView(root)
+  
+private fun makeUi() {
+    val root = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        setPadding(18, 20, 18, 10)
+    }
+
+    root.addView(TextView(this).apply {
+        text = "Voter Search"
+        textSize = 25f
+        gravity = Gravity.CENTER
+    })
+
+    root.addView(Button(this).apply {
+        text = "Import / Replace voter PDF"
+        setOnClickListener {
+            picker.launch(arrayOf("application/pdf"))
+        }
+    })
+
+    input = EditText(this).apply {
+        hint = "Search English / Telugu name, voter ID or serial"
+        setSingleLine(true)
+    }
+
+    root.addView(input)
+
+    root.addView(Button(this).apply {
+        text = "Search"
+        setOnClickListener { search() }
+    })
+
+    status = TextView(this)
+    root.addView(status)
+
+    progress = ProgressBar(
+        this,
+        null,
+        android.R.attr.progressBarStyleHorizontal
+    ).apply {
+        max = 100
+        visibility = View.GONE
+    }
+
+    root.addView(progress)
+
+    val scroll = ScrollView(this)
+    results = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+    }
+
+    scroll.addView(results)
+    root.addView(scroll, LinearLayout.LayoutParams(-1, 0, 1f))
+
+    setContentView(root)
+}
+
  }
  private fun showState() { val n=db.count(); status.text=if(n>0) "$n card entries saved on this phone. Search offline." else "Select your voter PDF to import it." }
  private fun confirmImport(uri:Uri) {
