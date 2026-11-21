@@ -37,6 +37,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
         db = VoterDb(this)
         makeUi()
         showState()
@@ -65,11 +66,14 @@ class MainActivity : AppCompatActivity() {
             hint = "Search English / Telugu name, voter ID or serial"
             setSingleLine(true)
         }
+
         root.addView(input)
 
         root.addView(Button(this).apply {
             text = "Search"
-            setOnClickListener { search() }
+            setOnClickListener {
+                search()
+            }
         })
 
         status = TextView(this)
@@ -83,6 +87,7 @@ class MainActivity : AppCompatActivity() {
             max = 100
             visibility = View.GONE
         }
+
         root.addView(progress)
 
         val scroll = ScrollView(this)
@@ -98,9 +103,10 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun showState() {
-        val n = db.count()
-        status.text = if (n > 0) {
-            "$n card entries saved on this phone. Search offline."
+        val count = db.count()
+
+        status.text = if (count > 0) {
+            "$count card entries saved on this phone. Search offline."
         } else {
             "Select your voter PDF to import it."
         }
@@ -114,7 +120,9 @@ class MainActivity : AppCompatActivity() {
                     "Importing a new PDF will replace the currently saved list."
             )
             .setNegativeButton("Cancel", null)
-            .setPositiveButton("Import") { _, _ -> importPdf(uri) }
+            .setPositiveButton("Import") { _, _ ->
+                importPdf(uri)
+            }
             .show()
     }
 
@@ -124,51 +132,85 @@ class MainActivity : AppCompatActivity() {
         status.text = "Copying PDF. Keep app open…"
 
         worker.execute {
+
             var renderer: PdfRenderer? = null
             var pfd: ParcelFileDescriptor? = null
             var ocr: TessBaseAPI? = null
 
             try {
+                // Copy selected PDF into app storage
                 val pdf = File(filesDir, "voter_source.pdf")
 
-                contentResolver.openInputStream(uri).use { src ->
-                    requireNotNull(src)
-                    FileOutputStream(pdf).use { dst ->
-                        src.copyTo(dst)
+                contentResolver.openInputStream(uri).use { source ->
+                    requireNotNull(source) {
+                        "Unable to open selected PDF"
+                    }
+
+                    FileOutputStream(pdf).use { destination ->
+                        source.copyTo(destination)
                     }
                 }
 
-                val td = File(filesDir, "tesseract/tessdata")
-                td.mkdirs()
+                // Create Tesseract directories
+                val tessFolder = File(filesDir, "tesseract")
+                val tessDataFolder = File(tessFolder, "tessdata")
 
-                downloadLang(td, "eng")
-                downloadLang(td, "tel")
+                tessDataFolder.mkdirs()
 
-                ocr = TessBaseAPI()
+                // Download English and Telugu OCR data
+                statusUpdate("Downloading English OCR data...")
 
-                check(
-                    ocr.init(
-                        File(filesDir, "tesseract").absolutePath,
-                        "eng+tel"
-                    )
-                ) {
-                    "OCR initialization failed"
+                downloadLang(tessDataFolder, "eng")
+
+                statusUpdate("Downloading Telugu OCR data...")
+
+                downloadLang(tessDataFolder, "tel")
+
+                // Validate OCR files
+                val engFile = File(tessDataFolder, "eng.traineddata")
+                val telFile = File(tessDataFolder, "tel.traineddata")
+
+                check(engFile.exists() && engFile.length() > 100000) {
+                    "English OCR data is missing or invalid"
                 }
 
+                check(telFile.exists() && telFile.length() > 100000) {
+                    "Telugu OCR data is missing or invalid"
+                }
+
+                // Initialize Tesseract
+                statusUpdate("Initializing OCR engine...")
+
+                val tess = TessBaseAPI()
+                ocr = tess
+
+                val initialized = tess.init(
+                    tessFolder.absolutePath + File.separator,
+                    "eng+tel"
+                )
+
+                check(initialized) {
+                    "Tesseract could not load English and Telugu language data."
+                }
+
+                // Clear previous voter records only after OCR initialization
                 db.clear()
 
+                // Open PDF
                 pfd = ParcelFileDescriptor.open(
                     pdf,
                     ParcelFileDescriptor.MODE_READ_ONLY
                 )
 
-                renderer = PdfRenderer(pfd)
+                renderer = PdfRenderer(pfd!!)
 
-                val total = renderer.pageCount
+                val totalPages = renderer!!.pageCount
                 var serial = 0
 
-                for (pi in 2 until total) {
-                    val page = renderer.openPage(pi)
+                // Process PDF pages starting from page 3
+                for (pi in 2 until totalPages) {
+
+                    val page = renderer!!.openPage(pi)
 
                     try {
                         val bmp = Bitmap.createBitmap(
@@ -185,29 +227,33 @@ class MainActivity : AppCompatActivity() {
                                 PdfRenderer.Page.RENDER_MODE_FOR_PRINT
                             )
 
-                            val l = (bmp.width * 0.095f).roundToInt()
-                            val r = (bmp.width * 0.91f).roundToInt()
-                            val t = (bmp.height * 0.115f).roundToInt()
-                            val b = (bmp.height * 0.915f).roundToInt()
+                            // 3 columns x 9 rows
+                            val left = (bmp.width * 0.095f).roundToInt()
+                            val right = (bmp.width * 0.91f).roundToInt()
+                            val top = (bmp.height * 0.115f).roundToInt()
+                            val bottom = (bmp.height * 0.915f).roundToInt()
 
-                            val cw = (r - l) / 3
-                            val ch = (b - t) / 9
+                            val cellWidth = (right - left) / 3
+                            val cellHeight = (bottom - top) / 9
 
                             for (row in 0..8) {
                                 for (col in 0..2) {
-                                    val x = l + col * cw
-                                    val y = t + row * ch
+
+                                    val x = left + col * cellWidth
+                                    val y = top + row * cellHeight
 
                                     val rect = Rect(
                                         x,
                                         y,
-                                        (x + cw).coerceAtMost(bmp.width),
-                                        (y + ch).coerceAtMost(bmp.height)
+                                        (x + cellWidth).coerceAtMost(bmp.width),
+                                        (y + cellHeight).coerceAtMost(bmp.height)
                                     )
 
                                     if (rect.width() <= 0 ||
                                         rect.height() <= 0
-                                    ) continue
+                                    ) {
+                                        continue
+                                    }
 
                                     val card = Bitmap.createBitmap(
                                         bmp,
@@ -218,9 +264,10 @@ class MainActivity : AppCompatActivity() {
                                     )
 
                                     try {
-                                        ocr.setImage(card)
+                                        tess.setImage(card)
 
-                                        val raw = ocr.getUTF8Text() ?: ""
+                                        val rawText = tess.getUTF8Text() ?: ""
+
                                         serial++
 
                                         val photo = File(
@@ -230,42 +277,46 @@ class MainActivity : AppCompatActivity() {
 
                                         photo.parentFile?.mkdirs()
 
-                                        FileOutputStream(photo).use {
+                                        FileOutputStream(photo).use { output ->
                                             card.compress(
                                                 Bitmap.CompressFormat.JPEG,
                                                 78,
-                                                it
+                                                output
                                             )
                                         }
 
                                         db.insert(
                                             serial,
                                             pi + 1,
-                                            raw.replace(
+                                            rawText.replace(
                                                 Regex("\\s+"),
                                                 " "
                                             ).trim(),
                                             photo.absolutePath
                                         )
+
                                     } finally {
                                         card.recycle()
                                     }
                                 }
                             }
 
-                            val pct = (
+                            val percentage = (
                                 ((pi - 1).toFloat() /
-                                    (total - 2).coerceAtLeast(1)) * 100
+                                    (totalPages - 2).coerceAtLeast(1)) * 100
                             ).roundToInt()
 
                             runOnUiThread {
-                                progress.progress = pct
+                                progress.progress = percentage
+
                                 status.text =
-                                    "Processing page ${pi + 1}/$total • $serial cards"
+                                    "Processing page ${pi + 1}/$totalPages • $serial cards"
                             }
+
                         } finally {
                             bmp.recycle()
                         }
+
                     } finally {
                         page.close()
                     }
@@ -273,6 +324,7 @@ class MainActivity : AppCompatActivity() {
 
                 runOnUiThread {
                     progress.visibility = View.GONE
+
                     status.text =
                         "${db.count()} card entries saved. Search is available offline."
 
@@ -284,12 +336,16 @@ class MainActivity : AppCompatActivity() {
                 }
 
             } catch (e: Exception) {
+
                 runOnUiThread {
                     progress.visibility = View.GONE
+
                     status.text =
-                        "Import failed: ${e.message}. Check connection and try again."
+                        "Import failed: ${e.message}"
                 }
+
             } finally {
+
                 try {
                     ocr?.end()
                 } catch (_: Exception) {
@@ -308,61 +364,101 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun downloadLang(dir: File, lang: String) {
-        val f = File(dir, "$lang.traineddata")
-
-        if (f.exists() && f.length() > 100000) return
-
-        URL(
-            "https://github.com/tesseract-ocr/tessdata_fast/raw/main/$lang.traineddata"
-        ).openConnection().apply {
-            connectTimeout = 20000
-            readTimeout = 60000
-        }.getInputStream().use { src ->
-            FileOutputStream(f).use {
-                src.copyTo(it)
-            }
+    private fun statusUpdate(message: String) {
+        runOnUiThread {
+            status.text = message
         }
+    }
 
-        check(f.length() > 100000) {
-            "Unable to get $lang OCR data"
+    // Download Tesseract language data
+    private fun downloadLang(dir: File, lang: String) {
+
+        dir.mkdirs()
+
+        val file = File(dir, "$lang.traineddata")
+        val tempFile = File(dir, "$lang.traineddata.tmp")
+
+        val url =
+            "https://raw.githubusercontent.com/tesseract-ocr/tessdata/main/$lang.traineddata"
+
+        try {
+            val connection = URL(url).openConnection().apply {
+                connectTimeout = 30000
+                readTimeout = 120000
+            }
+
+            connection.getInputStream().use { source ->
+                FileOutputStream(tempFile).use { destination ->
+                    source.copyTo(destination)
+                }
+            }
+
+            check(
+                tempFile.exists() && tempFile.length() > 100000
+            ) {
+                "Downloaded $lang OCR file is invalid"
+            }
+
+            if (file.exists()) {
+                file.delete()
+            }
+
+            check(tempFile.renameTo(file)) {
+                "Unable to save $lang OCR data"
+            }
+
+        } catch (e: Exception) {
+            tempFile.delete()
+
+            throw Exception(
+                "Failed to download $lang OCR data: ${e.message}"
+            )
         }
     }
 
     private fun search() {
-        val q = input.text.toString().trim()
+
+        val query = input.text.toString().trim()
+
         results.removeAllViews()
 
-        if (q.isEmpty()) {
+        if (query.isEmpty()) {
             status.text = "Enter a search term."
             return
         }
 
-        val rows = db.search(q)
+        val rows = db.search(query)
 
         status.text =
             "${rows.size} matching cards. Duplicate names are listed separately."
 
-        rows.forEach { v ->
+        rows.forEach { voter ->
+
             val row = LinearLayout(this).apply {
                 orientation = LinearLayout.HORIZONTAL
                 setPadding(3, 10, 3, 10)
             }
 
             val photo = ImageView(this).apply {
-                val f = File(v.image)
 
-                if (f.exists()) {
-                    setImageURI(Uri.fromFile(f))
+                val file = File(voter.image)
+
+                if (file.exists()) {
+                    setImageURI(Uri.fromFile(file))
                 }
 
                 scaleType = ImageView.ScaleType.CENTER_CROP
             }
 
-            row.addView(photo, LinearLayout.LayoutParams(110, 130))
+            row.addView(
+                photo,
+                LinearLayout.LayoutParams(110, 130)
+            )
 
             val details = TextView(this).apply {
-                text = "Entry ${v.serial} • PDF page ${v.page}\n${v.text}"
+                text =
+                    "Entry ${voter.serial} • PDF page ${voter.page}\n${voter.text}"
+
                 textSize = 14f
                 setPadding(10, 3, 3, 3)
             }
@@ -405,12 +501,16 @@ class VoterDb(
     1
 ) {
 
-    override fun onCreate(db: android.database.sqlite.SQLiteDatabase) {
+    override fun onCreate(
+        db: android.database.sqlite.SQLiteDatabase
+    ) {
         db.execSQL(
             "CREATE TABLE voters(serial INTEGER PRIMARY KEY, page INTEGER, ocr TEXT, image TEXT)"
         )
 
-        db.execSQL("CREATE INDEX voter_text_idx ON voters(ocr)")
+        db.execSQL(
+            "CREATE INDEX voter_text_idx ON voters(ocr)"
+        )
     }
 
     override fun onUpgrade(
@@ -422,48 +522,68 @@ class VoterDb(
 
     fun clear() {
         writableDatabase.delete("voters", null, null)
-        File(appContext.filesDir, "cards").deleteRecursively()
+
+        File(
+            appContext.filesDir,
+            "cards"
+        ).deleteRecursively()
     }
 
     fun count(): Int {
         readableDatabase.rawQuery(
             "SELECT COUNT(*) FROM voters",
             null
-        ).use {
-            return if (it.moveToFirst()) it.getInt(0) else 0
+        ).use { cursor ->
+            return if (cursor.moveToFirst()) {
+                cursor.getInt(0)
+            } else {
+                0
+            }
         }
     }
 
-    fun insert(s: Int, p: Int, t: String, i: String) {
+    fun insert(
+        serial: Int,
+        page: Int,
+        text: String,
+        image: String
+    ) {
         val values = android.content.ContentValues().apply {
-            put("serial", s)
-            put("page", p)
-            put("ocr", t)
-            put("image", i)
+            put("serial", serial)
+            put("page", page)
+            put("ocr", text)
+            put("image", image)
         }
 
-        writableDatabase.insert("voters", null, values)
+        writableDatabase.insert(
+            "voters",
+            null,
+            values
+        )
     }
 
-    fun search(q: String): List<VoterRow> {
-        val out = mutableListOf<VoterRow>()
+    fun search(query: String): List<VoterRow> {
+
+        val output = mutableListOf<VoterRow>()
 
         readableDatabase.rawQuery(
             "SELECT serial,page,ocr,image FROM voters WHERE ocr LIKE ? ORDER BY serial LIMIT 500",
-            arrayOf("%$q%")
-        ).use { c ->
-            while (c.moveToNext()) {
-                out.add(
+            arrayOf("%$query%")
+        ).use { cursor ->
+
+            while (cursor.moveToNext()) {
+
+                output.add(
                     VoterRow(
-                        c.getInt(0),
-                        c.getInt(1),
-                        c.getString(2) ?: "",
-                        c.getString(3) ?: ""
+                        cursor.getInt(0),
+                        cursor.getInt(1),
+                        cursor.getString(2) ?: "",
+                        cursor.getString(3) ?: ""
                     )
                 )
             }
         }
 
-        return out
+        return output
     }
 }
